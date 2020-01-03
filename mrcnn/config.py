@@ -54,6 +54,10 @@ class Config(object):
     # to COMPUTE_BACKBONE_SHAPE as well
     BACKBONE = "resnet101"
 
+    # Add Stage_5 to the resnet architecture, if BACKBONE is not ResNet
+    # then it does nothing.
+    RN_STAGE_5 = True
+
     # Only useful if you supply a callable to BACKBONE. Should compute
     # the shape of each layer of the FPN Pyramid.
     # See model.compute_backbone_shapes

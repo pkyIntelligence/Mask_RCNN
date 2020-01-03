@@ -27,6 +27,7 @@ Usage: import the module (see Jupyter notebooks for examples), or run from
     python3 coco.py evaluate --dataset=/path/to/coco/ --model=last
 """
 
+import io
 import os
 import sys
 import time
@@ -233,13 +234,13 @@ class CocoDataset(utils.Dataset):
         image_info = self.image_info[image_id]
         if image_info["source"] != "coco":
             return super(CocoDataset, self).load_mask(image_id)
-
         instance_masks = []
         class_ids = []
         annotations = self.image_info[image_id]["annotations"]
         # Build mask of shape [height, width, instance_count] and list
         # of class IDs that correspond to each channel of the mask.
         for annotation in annotations:
+
             class_id = self.map_source_class_id(
                 "coco.{}".format(annotation['category_id']))
             if class_id:
@@ -277,6 +278,27 @@ class CocoDataset(utils.Dataset):
         else:
             super(CocoDataset, self).image_reference(image_id)
 
+    def search(self, is_crowd=True):
+        """
+        returns an id that satisfies the search criteria
+        :param is_crowd:
+        :return:
+        """
+        poly_ctr = 0
+        RLE_ctr = 0
+        comp_ctr = 0
+        for img_id in self._image_ids:
+            annotations = self.image_info[img_id]["annotations"]
+            for ann in annotations:
+                segm = ann['segmentation']
+                if isinstance(segm, list):
+                    poly_ctr = poly_ctr + 1
+                elif isinstance(segm['counts'], list):
+                    RLE_ctr = RLE_ctr + 1
+                else:
+                    comp_ctr = comp_ctr + 1
+        return [poly_ctr, RLE_ctr, comp_ctr]
+
     # The following two functions are from pycocotools with a few changes.
 
     def annToRLE(self, ann, height, width):
@@ -298,13 +320,93 @@ class CocoDataset(utils.Dataset):
             rle = ann['segmentation']
         return rle
 
+    def stitch_bits(self, buf):
+        """
+        :param buf: A stream of 5-bit encodings of a number
+        :return: An int that is the sum of the 5-bit encodings, can be negative
+        """
+        # python ints are at most 24 bytes long, 38 5-bit encodings = 90 bits, 24 bytes = 192 bits
+        assert len(buf) <= 38
+
+        if buf[-1] & 0x10:
+            s = -1 # Negative case, two's compliments version is all 1's i.e. 0xFFFFFFFFFFFFFFFFFF.....
+        else:
+            s = 0
+
+        for num in reversed(buf):
+            s = s << 5
+            s += num
+
+        return s
+
+    def uncompRLEToMask(self, uncomp_RLE_mask, height, width):
+        """
+        Converts an uncompressed RLE mask to a 2d binary mask
+        :param uncomp_RLE_mask: an uncompressed RLE binary mask [0_n1, 1_n1, 0_n2, 1_n2, ....] where each 0_nX and
+            1_nX are the number of consecutive 0's and 1's
+        :param height: the height of the array
+        :param width: the width of the array
+        :return: the numpy binary mask
+        """
+        assert sum(uncomp_RLE_mask) == (height * width)
+        mask = np.zeros((height, width))
+        one_switch = False
+        i = 0
+        for num in uncomp_RLE_mask:
+            if one_switch:
+                start_row = i % height
+                start_col = i // height
+                end_row = (i+num-1) % height  # Inclusive
+                end_col = (i+num-1) // height  # Inclusive
+                if end_col == start_col:
+                    mask[start_row:end_row+1, start_col] = 1
+                else:
+                    mask[start_row:height+1, start_col] = 1
+                    mask[:, start_col+1:end_col] = 1
+                    mask[0:end_row+1, end_col] = 1
+            one_switch = ~one_switch
+            i = i + num
+
+        return mask
+
+    def compRLEToMask(self, rle_obj):
+        """
+        Convert Compressed RLE Object to Binary mask
+        :return: binary mask (numpy 2D array)
+        Assumes encoded numbers are no larger than a normal python int
+        """
+        bytes_buffer = io.BytesIO(rle_obj['counts'])
+        bs = bytes_buffer.read(1)
+        bits_buf = []
+        uncomp_RLE_mask = []
+        RLE_idx = 0
+
+        while bs:
+            byte = bs[0] - 48  # Compressed bytes are offset by 48 to conform to ASCII '0'
+            assert 0 <= byte < 64  # Compressed encoding shouldn't go beyond 6 bits ( 2^6 = 64 )
+            more = byte & 0x20
+            decoded_bits = byte & 0x1f
+            bits_buf.append(decoded_bits)
+            if not more:  # MSB is 0
+                decoded_value = self.stitch_bits(bits_buf)
+                if RLE_idx > 2:
+                    decoded_value = uncomp_RLE_mask[-2] + decoded_value
+                uncomp_RLE_mask.append(decoded_value)
+                RLE_idx = RLE_idx + 1
+                bits_buf = []
+            bs = bytes_buffer.read(1)
+
+        return self.uncompRLEToMask(uncomp_RLE_mask,
+                                    height=rle_obj['size'][0],
+                                    width=rle_obj['size'][1])
+
     def annToMask(self, ann, height, width):
         """
         Convert annotation which can be polygons, uncompressed RLE, or RLE to binary mask.
         :return: binary mask (numpy 2D array)
         """
         rle = self.annToRLE(ann, height, width)
-        m = maskUtils.decode(rle)
+        m = self.compRLEToMask(rle)
         return m
 
 
@@ -313,7 +415,8 @@ class CocoDataset(utils.Dataset):
 ############################################################
 
 def build_coco_results(dataset, image_ids, rois, class_ids, scores, masks):
-    """Arrange resutls to match COCO specs in http://cocodataset.org/#format
+    """
+    Arrange resutls to match COCO specs in http://cocodataset.org/#format
     """
     # If no results, return an empty list
     if rois is None:

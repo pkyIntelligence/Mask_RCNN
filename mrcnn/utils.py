@@ -180,7 +180,7 @@ def apply_box_deltas(boxes, deltas):
     return np.stack([y1, x1, y2, x2], axis=1)
 
 
-def box_refinement_graph(box, gt_box):
+def box_refinement(box, gt_box):
     """Compute refinement needed to transform box to gt_box.
     box and gt_box are [N, (y1, x1, y2, x2)]
     """
@@ -800,14 +800,14 @@ def compute_recall(pred_boxes, gt_boxes, iou):
 # an easy way to support batches > 1 quickly with little code modification.
 # In the long run, it's more efficient to modify the code to support large
 # batches and getting rid of this function. Consider this a temporary solution
-def batch_slice(inputs, graph_fn, batch_size, names=None):
+def batch_slice(inputs, fn, batch_size, names=None):
     """Splits inputs into slices and feeds each slice to a copy of the given
     computation graph and then combines the results. It allows you to run a
     graph on a batch of inputs even if the graph is written to support one
     instance only.
 
     inputs: list of tensors. All must have the same first dimension length
-    graph_fn: A function that returns a TF tensor that's part of a graph.
+    fn: A function that returns a TF tensor that's part of a graph.
     batch_size: number of slices to divide the data into.
     names: If provided, assigns names to the resulting tensors.
     """
@@ -817,7 +817,7 @@ def batch_slice(inputs, graph_fn, batch_size, names=None):
     outputs = []
     for i in range(batch_size):
         inputs_slice = [x[i] for x in inputs]
-        output_slice = graph_fn(*inputs_slice)
+        output_slice = fn(*inputs_slice)
         if not isinstance(output_slice, (tuple, list)):
             output_slice = [output_slice]
         outputs.append(output_slice)
@@ -906,3 +906,21 @@ def resize(image, output_shape, order=1, mode='constant', cval=0, clip=True,
             image, output_shape,
             order=order, mode=mode, cval=cval, clip=clip,
             preserve_range=preserve_range)
+
+
+def expand_layers(model):
+    """
+    Expands all the layers of a model to lowest level of layers
+    :param model: the model to expand
+    :return: a list of leaf level layers
+    """
+    mixed_layers = model.layers
+    leaf_layers = []
+    while mixed_layers:
+        layer = mixed_layers.pop(0)
+        if isinstance(layer, tf.keras.Model):
+            mixed_layers = layer.layers + mixed_layers
+        else:
+            leaf_layers.append(layer)
+
+    return leaf_layers
