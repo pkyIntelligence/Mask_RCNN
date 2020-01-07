@@ -325,7 +325,7 @@ class CocoDataset(utils.Dataset):
         :param buf: A stream of 5-bit encodings of a number
         :return: An int that is the sum of the 5-bit encodings, can be negative
         """
-        # python ints are at most 24 bytes long, 38 5-bit encodings = 90 bits, 24 bytes = 192 bits
+        # python ints are at most 24 bytes long, 38 5-bit encodings = 190 bits, 24 bytes = 192 bits
         assert len(buf) <= 38
 
         if buf[-1] & 0x10:
